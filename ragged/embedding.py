@@ -19,18 +19,20 @@ class Embedder:
         self.model = SentenceTransformer(
             "NovaSearch/stella_en_400M_v5",
             trust_remote_code=True,
+            cache_folder=model_dir,
             device=device,
             config_kwargs={
                 "use_memory_efficient_attention": device.type == "cuda",
                 "unpad_inputs": device.type == "cuda",
             },
+            default_prompt_name=prompt_name,
         )
 
     def embed(self, data: List[str]):
         """
         Embeds the data into a vector space using a predefined model.
         """
-        embeddings = self.model.encode(data, show_progress_bar=True)
+        embeddings = self.model.encode(data, batch_size=16, show_progress_bar=True)
         return embeddings
 
     def embed_and_persist(self, data: List[str], path: str):
