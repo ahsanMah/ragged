@@ -21,10 +21,27 @@ class Parser:
         for i in range(number_of_pages):
             page = reader.pages[i]
             text = page.extract_text(extraction_mode="plain")
-            #TODO: Add a check for line endings
-            # chunks should not split sentences ideally
-            for j in range(0, len(text), self.chunksize):
-                yield text[j:j + self.chunksize]
+
+            for s in self.extract_sentences(text):
+                yield s
+
+    def extract_sentences(self, text: str) -> List[str]:
+        """
+        Extract sentences from a text.
+        """
+        sentences =  text.split("\n")
+
+        left_end = 0
+        running_size = 0
+        for i in range(0, len(sentences)):
+            running_size += len(sentences[i])
+
+            if running_size < self.chunksize:
+                continue
+
+            yield ''.join(sentences[left_end : i + 1])
+            left_end = i + 1
+            running_size = 0
 
     def parse(self, path: str) -> Iterable[str]:
         """
