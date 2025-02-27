@@ -3,24 +3,24 @@ import time
 
 import gradio as gr
 import numpy as np
+from llama_cpp import Llama
 
 from config import Config
 from ragged.embedding import Embedder
 from ragged.parsers import Parser
-from llama_cpp import Llama
 
 llm = Llama.from_pretrained(
-    repo_id="bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF",
-    # filename="*Q4_K_L.gguf",
-    filename="*Q8_0.gguf",
-    n_gpu_layers=20,
+    repo_id="bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+    filename="*Q4_K_M.gguf",
+    # filename="*Q8_0.gguf",
+    n_gpu_layers=24,
     # seed=1337, # Uncomment to set a specific seed
-    n_ctx=16384, # Uncomment to increase the context window
+    n_ctx=65536, # Uncomment to increase the context window
     verbose=True,
     local_dir=Config.MODEL_DIR
 )
 
-# Dummy functions for demonstration purposes
+
 def process_documents(documents: list, cache: bool = False):
     """
     This function processes uploaded documents:
@@ -38,13 +38,13 @@ def process_documents(documents: list, cache: bool = False):
         # In a real app, you would process each document
         processed_files.append(doc.name)
         text_chunks = list(parser.parse_pdf(doc))
+        print(text_chunks)
         embeddings.extend(embedder.embed(text_chunks))
 
     embeddings = np.asarray(embeddings)
     os.makedirs("/tmp/ragged", exist_ok=True)
     np.save("/tmp/ragged/embeddings.npy", embeddings, allow_pickle=False)
     np.save("/tmp/ragged/textchunks.npy", text_chunks, allow_pickle=False)
-
 
     del parser, embedder
 
@@ -69,13 +69,16 @@ def generate_response(query: str, history: dict, documents: list):
     docs = np.load("/tmp/ragged/textchunks.npy", allow_pickle=False)
     embedder = Embedder(device="cpu")
 
-    # 
-    start_response = f"Based on the documents you've provided, I have extracted {len(embeddings)} snippets of information."
-    yield start_response
-
     response = []
+    # First response
+    if not history:
+        start_response = f"Based on the documents you've provided, I have extracted {len(embeddings)} snippets of information."
+        response.append(start_response)
+
     knn_indices = embedder.k_nearest_neighbors(embeddings, query)
-    retreived_docs = ", ".join([f"{i}: {docs[i]}" for i in knn_indices])
+    retreived_docs = "\n".join(
+        [f"snippet-{i}: {docs[idx]}" for i, idx in enumerate(knn_indices)]
+    )
 
     prompt = f"""Query: {query}
     Using the following contextual information, respond to the query.
@@ -86,6 +89,7 @@ def generate_response(query: str, history: dict, documents: list):
     <context_end>
     Response: <think>
     """
+    print(prompt)
 
     output = llm.create_completion(
         prompt,  # Prompt
@@ -101,7 +105,8 @@ def generate_response(query: str, history: dict, documents: list):
     # Iterate over the output and print it.
     response = []
     for token in output:
-        response.append(token["choices"][0]["text"])
+        text = token["choices"][0]["text"]
+        response.append(text)
         yield "".join(response)
 
 
