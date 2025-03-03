@@ -1,13 +1,17 @@
-from typing import Iterable, List
+import os
+from typing import Generator, Iterable, List
 
 from pypdf import PdfReader
 
+from ragged.documents import ChunkMetadata
+
 
 class Parser:
-    '''
+    """
     Parses input objects such as PDFs and HTML files.
     Each method should return a string upto a chunksize length.
-    '''
+    """
+
     def __init__(self, chunksize: int = 256):
         self.chunksize = chunksize
         self.metadata = {}
@@ -16,31 +20,39 @@ class Parser:
         """
         Parse the text from a PDF file.
         """
+        filename = os.path.basename(path)
         reader = PdfReader(path)
         number_of_pages = len(reader.pages)
-        for i in range(number_of_pages):
-            page = reader.pages[i]
+        for page_idx in range(number_of_pages):
+            page = reader.pages[page_idx]
             text = page.extract_text(extraction_mode="plain")
 
-            for s in self.extract_sentences(text):
-                yield s
+            for chunk_idx, chunk in enumerate(self.extract_sentences(text)):
+                metadata = ChunkMetadata(
+                    filename=filename,
+                    file_type="pdf",
+                    file_path=path,
+                    page_number=page_idx,
+                    chunk_index=chunk_idx,
+                )
+                yield (chunk, metadata)
 
-    def extract_sentences(self, text: str) -> List[str]:
+    def extract_sentences(self, text: str) -> Generator[str]:
         """
         Extract sentences from a text.
         """
-        sentences =  text.split("\n")
+        sentences = text.split("\n")
 
-        left_end = 0
+        start = 0
         running_size = 0
-        for i in range(0, len(sentences)):
-            running_size += len(sentences[i])
+        for end in range(0, len(sentences)):
+            running_size += len(sentences[end])
 
             if running_size < self.chunksize:
                 continue
 
-            yield ''.join(sentences[left_end : i + 1])
-            left_end = i + 1
+            yield "".join(sentences[start : end + 1])
+            start = end + 1
             running_size = 0
 
     def parse(self, path: str) -> Iterable[str]:
@@ -48,7 +60,7 @@ class Parser:
         Parse the text from a file.
         """
         if path.endswith(".pdf"):
-            iterator =  self.parse_pdf(path)
+            iterator = self.parse_pdf(path)
         else:
             raise ValueError("Unsupported file type")
 
