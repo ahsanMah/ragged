@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -15,13 +16,13 @@ llm = Llama.from_pretrained(
     # filename="*Q8_0.gguf",
     n_gpu_layers=24,
     # seed=1337, # Uncomment to set a specific seed
-    n_ctx=65536, # Uncomment to increase the context window
+    n_ctx=65536,  # Uncomment to increase the context window
     verbose=True,
-    local_dir=Config.MODEL_DIR
+    local_dir=Config.MODEL_DIR,
 )
 
 
-def process_documents(documents: list, cache: bool = False):
+def process_documents(documents: list, project_dir: str | os.PathLike = "/tmp/ragged"):
     """
     This function processes uploaded documents:
     1. Extracts text from documents in chunks
@@ -29,22 +30,25 @@ def process_documents(documents: list, cache: bool = False):
     3. TODO: Stores in vector database
     """
 
-    parser = Parser(chunksize=128)
+    parser = Parser(chunksize=256)
     embedder = Embedder(device="cpu")
+    os.makedirs(project_dir, exist_ok=True)
 
     processed_files = []
     embeddings = []
     for doc in documents:
-        # In a real app, you would process each document
         processed_files.append(doc.name)
-        text_chunks = list(parser.parse_pdf(doc))
-        print(text_chunks)
-        embeddings.extend(embedder.embed(text_chunks))
+        # unzip tuples and zip into separate arrays
+        text_chunks, metadata = zip(*list(parser.parse(doc)))
+        embeddings = np.asarray(embedder.embed(text_chunks))
 
     embeddings = np.asarray(embeddings)
-    os.makedirs("/tmp/ragged", exist_ok=True)
-    np.save("/tmp/ragged/embeddings.npy", embeddings, allow_pickle=False)
+    np.save(os.path.join(project_dir, "embeddings.npy"), embeddings, allow_pickle=False)
     np.save("/tmp/ragged/textchunks.npy", text_chunks, allow_pickle=False)
+
+    serialized_metadata = [m.to_dict() for m in metadata]
+    with open("/tmp/ragged/metadata.json", "w") as f:
+        json.dump(serialized_metadata, f)
 
     del parser, embedder
 
@@ -95,7 +99,7 @@ def generate_response(query: str, history: dict, documents: list):
         prompt,  # Prompt
         max_tokens=None,  # Generate up to 32 tokens, set to None to generate up to the end of the context window
         echo=True,  # Echo the prompt back in the output
-        stream=True
+        stream=True,
     )  # Generate a completion, can also call create_completion
 
     print(">>>> Prompt:")
