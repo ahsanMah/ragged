@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Generator, Iterable, List
 
 from pypdf import PdfReader
@@ -27,6 +28,10 @@ class Parser:
             page = reader.pages[page_idx]
             text = page.extract_text(extraction_mode="plain")
 
+            # with open("extracted.txt", "w") as f:
+            #     f.write(f"---PAGE {page_idx}---\n")
+            #     f.write(text)
+
             for chunk_idx, chunk in enumerate(self.extract_sentences(text)):
                 metadata = ChunkMetadata(
                     filename=filename,
@@ -35,13 +40,24 @@ class Parser:
                     page_number=page_idx,
                     chunk_index=chunk_idx,
                 )
+                chunk = self.post_process_chunk(chunk)
                 yield (chunk, metadata)
+
+    def post_process_chunk(self, text: str) -> str:
+        """Optional post processing of the text to make it more coherent for LLM
+        """
+
+        # remove newlines to resemble paragraphs
+        text = re.sub(r"[\n\s?]+", " ", text)
+        return text
 
     def extract_sentences(self, text: str) -> Generator[str]:
         """
         Extract sentences from a text.
         """
-        sentences = text.split("\n")
+
+        text = re.sub(r"[\n\s?]+", "\n", text)
+        sentences = text.split(".\n")
 
         start = 0
         running_size = 0
