@@ -2,14 +2,15 @@ import json
 import os
 import pdb
 import time
-from typing import List, Optional
+from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional, Union
 
 import gradio as gr
 import numpy as np
 from llama_cpp import Llama
 
 from config import Config
-from ragged.documents import Document
+from ragged.documents import ChunkMetadata, Document
 from ragged.embedding import Embedder
 from ragged.parsers import Parser
 
@@ -25,7 +26,7 @@ llm = Llama.from_pretrained(
 )
 
 
-def llm_prompt_template(query, context):
+def llm_prompt_template(query: str, context: str) -> str:
     common_instruction = f"""Using the following contextual information, respond to the query.
     Recall that the context should be taken as a **primary** source.
     You may use your knowledge to only adapt the context to answer the question.
@@ -42,20 +43,29 @@ def llm_prompt_template(query, context):
     return system_message_flavored
 
 
-def process_documents(documents: List, project_dir: str | os.PathLike = "/tmp/ragged"):
+def process_documents(
+    documents: List[gr.File], project_dir: Union[str, Path] = "/tmp/ragged"
+) -> str:
     """
     This function processes uploaded documents:
     1. Extracts text from documents in chunks
     2. Creates embeddings
     3. TODO: Stores in vector database
+
+    Args:
+        documents: List of uploaded files through Gradio interface
+        project_dir: Directory to store processed documents
+
+    Returns:
+        str: Status message indicating number of processed files and embeddings
     """
 
     parser = Parser(chunksize=256)
     embedder = Embedder(device="cpu")
     os.makedirs(project_dir, exist_ok=True)
 
-    processed_files = []
-    embeddings = []
+    processed_files: List[str] = []
+    embeddings: List[np.ndarray] = []
     for doc in documents:
         processed_files.append(doc.name)
         # unzip tuples and zip into separate arrays
@@ -65,28 +75,28 @@ def process_documents(documents: List, project_dir: str | os.PathLike = "/tmp/ra
         doc = Document(doc.name, project_dir)
         doc.store(text_chunks, embeddings=embeddings, metadata=metadata)
 
-    # embeddings = np.asarray(embeddings)
-    # np.save(os.path.join(project_dir, "embeddings.npy"), embeddings, allow_pickle=False)
-    # np.save("/tmp/ragged/textchunks.npy", text_chunks, allow_pickle=False)
-
-    # serialized_metadata = [m.to_dict() for m in metadata]
-    # with open("/tmp/ragged/metadata.json", "w") as f:
-    #     json.dump(serialized_metadata, f)
-
     del parser, embedder
 
     return f"Processed {len(processed_files)} documents\nExtracted: {len(embeddings)} embeddings"
 
 
 def generate_response(
-    query: str, history: dict, reference_documents: List, project_dir: Optional[List]
-):
+    query: str,
+    history: List[Dict[str, str]],
+    reference_documents: List[gr.File],
+    project_dir: Optional[str] = None,
+) -> Generator[str, None, None]:
     """
-    Dummy function to generate streaming responses from the LLM.
-    In a real application, this would:
-    1. Retrieve relevant context from the vector DB
-    2. Send query + context to LLM
-    3. Stream the response
+    Generate streaming responses from the LLM based on document context.
+
+    Args:
+        query: User's question
+        history: Chat history containing previous interactions
+        reference_documents: List of uploaded documents to search through
+        project_dir: Optional directory where documents are stored
+
+    Yields:
+        str: Generated response stream
     """
     print(query, reference_documents, history)
     if not reference_documents:
@@ -94,39 +104,38 @@ def generate_response(
         return
 
     # Load embeddings
-    documents, embeddings_arr, text_chunks = [], [], []
+    documents: List[Document] = []
+    embeddings_arr: List[np.ndarray] = []
+    text_chunks: List[str] = []
+
     for doc in reference_documents:
-        doc_kwargs = {"document_name": doc.name}
+        doc_kwargs: Dict[str, Any] = {"document_name": doc.name}
         if project_dir is not None:
-            doc_kwargs.update("storage_dir", project_dir)
+            doc_kwargs["storage_dir"] = project_dir
         doc = Document(**doc_kwargs)
         embeddings, text, _ = doc.load()
         embeddings_arr.append(embeddings)
         text_chunks.extend(text)
         documents.append(doc)
 
-    embeddings_arr = np.concatenate(embeddings_arr)
+    embeddings_arr_combined = np.concatenate(embeddings_arr)
     embedder = Embedder(device="cpu")
 
-    response = []
+    response: List[str] = []
     # First response
     if not history:
         start_response = f"Based on the documents you've provided, I have extracted {len(embeddings)} snippets of information."
         response.append(start_response)
 
-    knn_indices = embedder.k_nearest_neighbors(embeddings, query)
+    knn_indices = embedder.k_nearest_neighbors(embeddings_arr_combined, query)
     retreived_docs = "\n".join(
         [f"snippet-{i}: {text_chunks[idx]}" for i, idx in enumerate(knn_indices)]
     )
     # pdb.set_trace()
     if len(history) > 0:
-        chat_history = []
+        chat_history: List[str] = []
         for message in history:
-            if message["role"] == "user":
-                role_token = "<|user|>"
-            else:
-                role_token = "<|assistant|>"
-
+            role_token = "<|user|>" if message["role"] == "user" else "<|assistant|>"
             chat_history.append(f"""{role_token}{message['content']}</s>""")
         prompt_history = "".join(chat_history)
     else:
@@ -157,7 +166,13 @@ def generate_response(
 
 
 # Define the Gradio interface
-def create_rag_interface():
+def create_rag_interface() -> gr.Blocks:
+    """
+    Creates the Gradio interface for the RAG application
+
+    Returns:
+        gr.Blocks: Configured Gradio interface
+    """
     with gr.Blocks(theme=gr.themes.Soft()) as demo:
         gr.Markdown("# LLM RAG Application")
         gr.Markdown("Upload documents and ask questions based on their content")
