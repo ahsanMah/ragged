@@ -10,15 +10,17 @@ class Embedder:
     def __init__(
         self,
     ):
-        self.model = model_manager.embedder
+        """
+        Initialize the embedder. The model will be accessed synchronously
+        after the ModelManager has been initialized.
+        """
+        self.model = model_manager.get_embedder()
 
     def embed(self, data: List[str], batch_size: int = 16):
         """
         Embeds the data into a vector space using a predefined model.
         """
-        embeddings = self.model.encode(
-            data, batch_size=batch_size, show_progress_bar=True
-        )
+        embeddings = self.model.encode(data, batch_size=batch_size, show_progress_bar=True)
         return embeddings
 
     def embed_and_persist(self, data: List[str], path: str):

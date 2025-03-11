@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import pdb
@@ -8,8 +9,7 @@ from typing import Any, Dict, Generator, List, Optional, Union
 import gradio as gr
 import numpy as np
 
-from config import Config
-from ragged.documents import ChunkMetadata, Document
+from ragged.documents import Document
 from ragged.embedding import Embedder
 from ragged.models import model_manager
 from ragged.parsers import Parser
@@ -59,7 +59,9 @@ def process_documents(
         processed_files.append(doc.name)
         # unzip tuples and zip into separate arrays
         text_chunks, metadata = zip(*list(parser.parse(doc)))
-        embeddings = np.asarray(embedder.embed(text_chunks))
+        embeddings = np.asarray(
+            embedder.embed(text_chunks, batch_size=min(len(text_chunks), 32))
+        )
 
         doc = Document(doc.name, project_dir)
         doc.store(text_chunks, embeddings=embeddings, metadata=metadata)
@@ -114,13 +116,11 @@ def generate_response(
     response: List[str] = []
     # First response
     if not history:
-        start_response = f"Based on the documents you've provided, I have extracted {len(embeddings)} snippets of information."
+        start_response = f"Based on the documents you've provided, I have extracted {len(embeddings)} snippets of information.\n\n"
         response.append(start_response)
 
     knn_indices = embedder.k_nearest_neighbors(embeddings_arr_combined, query)
 
-    # retrieved_metadata = []
-    # for i, idx in enumerate(knn_indices):
     retrieved_docs = "\n".join(
         [f"snippet-{i}: {text_chunks[idx]}" for i, idx in enumerate(knn_indices)]
     )
@@ -147,7 +147,8 @@ def generate_response(
     templated_query = llm_prompt_template(query, retrieved_docs)
     prompt = "".join([prompt_history, templated_query])
 
-    output = model_manager.llm.create_completion(
+    llm = model_manager.get_llm()
+    output = llm.create_completion(
         prompt,
         max_tokens=1024,
         echo=False,
@@ -222,14 +223,16 @@ def create_rag_interface() -> gr.Blocks:
     return demo
 
 
-# Create and launch the app
+async def main():
+    # Initialize models at startup
+    await model_manager.initialize()
+    demo = create_rag_interface()
 
-# if __name__ == "__main__":
-demo = create_rag_interface()
-demo.queue()  # Enable queueing for better handling of multiple users
+    try:
+        demo.launch(share=False)
+    finally:
+        model_manager.close()
 
-try:
-    demo.launch(share=False)
-finally:
-    # Ensure models are properly closed when the application exits
-    model_manager.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
