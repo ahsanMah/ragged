@@ -7,23 +7,12 @@ from typing import Any, Dict, Generator, List, Optional, Union
 
 import gradio as gr
 import numpy as np
-from llama_cpp import Llama
 
 from config import Config
 from ragged.documents import ChunkMetadata, Document
 from ragged.embedding import Embedder
+from ragged.models import model_manager
 from ragged.parsers import Parser
-
-llm = Llama.from_pretrained(
-    repo_id="bartowski/microsoft_Phi-4-mini-instruct-GGUF",
-    filename="*Q4_K_M.gguf",
-    # repo_id="Qwen/Qwen2.5-3B-Instruct-GGUF",
-    # filename="*q8_0.gguf",
-    n_gpu_layers=20,
-    n_ctx=32768,
-    verbose=True,
-    local_dir=Config.MODEL_DIR,
-)
 
 
 def llm_prompt_template(query: str, context: str) -> str:
@@ -61,7 +50,7 @@ def process_documents(
     """
 
     parser = Parser(chunksize=256)
-    embedder = Embedder(device="cpu")
+    embedder = Embedder()
     os.makedirs(project_dir, exist_ok=True)
 
     processed_files: List[str] = []
@@ -75,7 +64,7 @@ def process_documents(
         doc = Document(doc.name, project_dir)
         doc.store(text_chunks, embeddings=embeddings, metadata=metadata)
 
-    del parser, embedder
+    del parser
 
     return f"Processed {len(processed_files)} documents\nExtracted: {len(embeddings)} embeddings"
 
@@ -99,13 +88,12 @@ def generate_response(
     Yields:
         str: Generated response stream
     """
-    print(query, reference_documents, history)
+
     if not reference_documents:
         yield "Please upload documents first!"
         return
 
     # Load embeddings
-    documents: List[Document] = []
     embeddings_arr: List[np.ndarray] = []
     text_chunks: List[str] = []
     metadata: List[str] = []
@@ -121,7 +109,7 @@ def generate_response(
         metadata.extend(metadatum)
 
     embeddings_arr_combined = np.concatenate(embeddings_arr)
-    embedder = Embedder(device="cpu")
+    embedder = Embedder()
 
     response: List[str] = []
     # First response
@@ -159,13 +147,13 @@ def generate_response(
     templated_query = llm_prompt_template(query, retrieved_docs)
     prompt = "".join([prompt_history, templated_query])
 
-    output = llm.create_completion(
-        prompt,  # Prompt
-        max_tokens=1024,  # Generate up to 32 tokens, set to None to generate up to the end of the context window
-        echo=False,  # Echo the prompt back in the output
+    output = model_manager.llm.create_completion(
+        prompt,
+        max_tokens=1024,
+        echo=False,
         stream=True,
         stop=["<|User|>", "<|Assistant|>", "<|assistant|>", "<|user|>"],
-    )  # Generate a completion, can also call create_completion
+    )
 
     print(">>>> Prompt:")
     print(prompt)
@@ -239,4 +227,9 @@ def create_rag_interface() -> gr.Blocks:
 # if __name__ == "__main__":
 demo = create_rag_interface()
 demo.queue()  # Enable queueing for better handling of multiple users
-demo.launch(share=False)  # Set share=False in production
+
+try:
+    demo.launch(share=False)
+finally:
+    # Ensure models are properly closed when the application exits
+    model_manager.close()
