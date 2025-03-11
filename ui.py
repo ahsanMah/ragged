@@ -37,7 +37,7 @@ def llm_prompt_template(query: str, context: str) -> str:
     """
 
     system_message_flavored = f"""<|system|>{common_instruction}<|end|>
-    <|user|>{query}<|end|><|assistant|>
+    <|user|>Query:{query}<|end|><|assistant|>
     """
 
     return system_message_flavored
@@ -94,6 +94,7 @@ def generate_response(
         history: Chat history containing previous interactions
         reference_documents: List of uploaded documents to search through
         project_dir: Optional directory where documents are stored
+        context_box: Gradio Textbox to display retrieved context
 
     Yields:
         str: Generated response stream
@@ -107,16 +108,17 @@ def generate_response(
     documents: List[Document] = []
     embeddings_arr: List[np.ndarray] = []
     text_chunks: List[str] = []
+    metadata: List[str] = []
 
     for doc in reference_documents:
         doc_kwargs: Dict[str, Any] = {"document_name": doc.name}
         if project_dir is not None:
             doc_kwargs["storage_dir"] = project_dir
         doc = Document(**doc_kwargs)
-        embeddings, text, _ = doc.load()
+        embeddings, text, metadatum = doc.load()
         embeddings_arr.append(embeddings)
         text_chunks.extend(text)
-        documents.append(doc)
+        metadata.extend(metadatum)
 
     embeddings_arr_combined = np.concatenate(embeddings_arr)
     embedder = Embedder(device="cpu")
@@ -128,20 +130,33 @@ def generate_response(
         response.append(start_response)
 
     knn_indices = embedder.k_nearest_neighbors(embeddings_arr_combined, query)
-    retreived_docs = "\n".join(
+
+    # retrieved_metadata = []
+    # for i, idx in enumerate(knn_indices):
+    retrieved_docs = "\n".join(
         [f"snippet-{i}: {text_chunks[idx]}" for i, idx in enumerate(knn_indices)]
     )
-    # pdb.set_trace()
+
+    # Create properly formatted data for the DataFrame
+    context_data = gr.DataFrame(
+        [
+            [i, text_chunks[idx], metadata[idx].filename, f"{0.95 - (i * 0.1):.2f}"]
+            for i, idx in enumerate(knn_indices)
+        ]
+    )
+
+    yield "".join(response), context_data
+
     if len(history) > 0:
         chat_history: List[str] = []
         for message in history:
             role_token = "<|user|>" if message["role"] == "user" else "<|assistant|>"
-            chat_history.append(f"""{role_token}{message['content']}</s>""")
+            chat_history.append(f"""{role_token}{message["content"]}</s>""")
         prompt_history = "".join(chat_history)
     else:
         prompt_history = ""
 
-    templated_query = llm_prompt_template(query, retreived_docs)
+    templated_query = llm_prompt_template(query, retrieved_docs)
     prompt = "".join([prompt_history, templated_query])
 
     output = llm.create_completion(
@@ -157,12 +172,11 @@ def generate_response(
     print(">>>> Streaming output:")
 
     # Iterate over the output and print it.
-    response = []
     for token in output:
         text = token["choices"][0]["text"]
         print(text, end="", flush=True)
         response.append(text)
-        yield "".join(response)
+        yield "".join(response), context_data
 
 
 # Define the Gradio interface
@@ -190,14 +204,25 @@ def create_rag_interface() -> gr.Blocks:
                 )
                 upload_button = gr.Button("Process Documents")
 
-            # Right panel for Q&A
+            # Right panel for Q&A and context
             with gr.Column(scale=2):
                 gr.Markdown("### Ask Questions")
-                chatbot = gr.ChatInterface(
+
+                with gr.Accordion("View Source Snippets", open=False):
+                    context_display = gr.Dataframe(
+                        headers=["ID", "Content", "Source", "Relevance"],
+                        label="Retrieved Document Snippets",
+                        interactive=False,
+                        wrap=True,
+                        column_widths=["10%", "60%", "15%", "15%"],
+                    )
+
+                chat = gr.ChatInterface(
                     fn=generate_response,
                     type="messages",
                     stop_btn=True,
                     additional_inputs=[uploaded_files],
+                    additional_outputs=[context_display],
                     description="Ask something about the uploaded documents...",
                 )
 
