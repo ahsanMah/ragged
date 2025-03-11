@@ -13,14 +13,14 @@ class Parser:
     Each method should return a string upto a chunksize length.
     """
 
-    def __init__(self, chunksize: int = 256):
+    def __init__(self, chunksize: int = 256, max_tokens: int = 512):
         self.chunksize = chunksize
+        self.max_tokens = max_tokens
         self.metadata = {}
 
     def parse_pdf(self, path: str) -> Iterable[str]:
-        """
-        Parse the text from a PDF file.
-        """
+        """Parse the text from a PDF file"""
+
         filename = os.path.basename(path)
         reader = PdfReader(path)
         number_of_pages = len(reader.pages)
@@ -44,17 +44,14 @@ class Parser:
                 yield (chunk, metadata)
 
     def post_process_chunk(self, text: str) -> str:
-        """Optional post processing of the text to make it more coherent for LLM
-        """
+        """Optional post processing of the text to make it more coherent for LLM"""
 
         # remove newlines to resemble paragraphs
         text = re.sub(r"[\n\s?]+", " ", text)
         return text
 
     def extract_sentences(self, text: str) -> Generator[str]:
-        """
-        Extract sentences from a text.
-        """
+        """Extract sentences from a text"""
 
         text = re.sub(r"[\n\s?]+", "\n", text)
         sentences = text.split(".\n")
@@ -67,14 +64,21 @@ class Parser:
             if running_size < self.chunksize:
                 continue
 
-            yield "".join(sentences[start : end + 1])
+            # Split the chunk into chunks of the desired size
+            s = "".join(sentences[start : end + 1])
+
+            if len(s) > self.max_tokens * 2:
+                # cheap hack cause this is splitting by characters not tokens
+                for i in range(0, len(s), self.max_tokens * 2):
+                    yield s[i : i + self.max_tokens * 2]
+            else:
+                yield s
             start = end + 1
             running_size = 0
 
     def parse(self, path: str) -> Iterable[str]:
-        """
-        Parse the text from a file.
-        """
+        """Parse the text from a file"""
+
         if path.endswith(".pdf"):
             iterator = self.parse_pdf(path)
         else:

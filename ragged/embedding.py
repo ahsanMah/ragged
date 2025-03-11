@@ -1,5 +1,6 @@
 from typing import List, Literal, Union
 
+import numpy as np
 import torch
 from sklearn.neighbors import NearestNeighbors
 
@@ -20,7 +21,9 @@ class Embedder:
         """
         Embeds the data into a vector space using a predefined model.
         """
-        embeddings = self.model.encode(data, batch_size=batch_size, show_progress_bar=True)
+        embeddings = self.model.encode(
+            data, batch_size=batch_size, show_progress_bar=True
+        )
         return embeddings
 
     def embed_and_persist(self, data: List[str], path: str):
@@ -29,12 +32,25 @@ class Embedder:
         """
         pass
 
-    def k_nearest_neighbors(self, embeddings, query: str, k: int = 5):
+    def k_nearest_neighbors(
+        self,
+        embeddings: np.ndarray,
+        query: str,
+        k: int = 20,
+        score_threshold: float = 0.4,
+    ):
         """
         Find k nearest neighbors for a query in the embedding space.
         """
-        knn = NearestNeighbors(n_neighbors=5, metric="cosine")
+        knn = NearestNeighbors(n_neighbors=min(k, len(embeddings)), metric="cosine")
         knn.fit(embeddings)
         query_embedding = self.model.encode([query])
-        indices = knn.kneighbors(query_embedding, return_distance=False)
-        return indices.flatten()
+        scores, indices = knn.kneighbors(query_embedding, return_distance=True)
+        scores = scores.flatten()
+        indices = indices.flatten()
+
+        # Filter out scores below the threshold
+        scores = scores[scores >= score_threshold]
+        indices = indices[scores >= score_threshold]
+
+        return scores, indices

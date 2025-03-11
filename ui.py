@@ -20,6 +20,7 @@ def llm_prompt_template(query: str, context: str) -> str:
     Recall that the context should be taken as a **primary** source.
     You may use your knowledge to only adapt the context to answer the question.
     Only answer the query. Keep your response brief. DO NOT ANSWER MORE THAN ASKED.
+    When referencing the context, use the following format: [<source-id>].
     <context>
     {context}
     </context>
@@ -111,27 +112,37 @@ def generate_response(
         metadata.extend(metadatum)
 
     embeddings_arr_combined = np.concatenate(embeddings_arr)
+    print(">>>> Embeddings combined:", embeddings_arr_combined.shape)
+
     embedder = Embedder()
 
     response: List[str] = []
+    context_data: List[gr.DataFrame] = []
+    retrieved_docs: List[str] = []
+
     # First response
     if not history:
         start_response = f"Based on the documents you've provided, I have extracted {len(embeddings)} snippets of information.\n\n"
         response.append(start_response)
 
-    knn_indices = embedder.k_nearest_neighbors(embeddings_arr_combined, query)
+    # Get the nearest neighbors
+    scores, knn_indices = embedder.k_nearest_neighbors(embeddings_arr_combined, query)
 
-    retrieved_docs = "\n".join(
-        [f"snippet-{i}: {text_chunks[idx]}" for i, idx in enumerate(knn_indices)]
-    )
+    # Filter out scores below the threshold
+    scores = scores[scores >= 0.4]
+    knn_indices = knn_indices[scores >= 0.4]
 
-    # Create properly formatted data for the DataFrame
-    context_data = gr.DataFrame(
-        [
-            [i, text_chunks[idx], metadata[idx].filename, f"{0.95 - (i * 0.1):.2f}"]
-            for i, idx in enumerate(knn_indices)
-        ]
-    )
+    # Get the text and metadata for the nearest neighbors
+    for i, idx in enumerate(knn_indices):
+        retrieved_docs.append(f"source-{i}: {text_chunks[idx]}")
+
+        # Create properly formatted data for the DataFrame
+        context_data.append(
+            [i, text_chunks[idx], metadata[idx].filename, f"{1 - scores[i]:.2f}"]
+        )
+
+    retrieved_docs = "\n".join(retrieved_docs)
+    context_data = gr.DataFrame(context_data)
 
     yield "".join(response), context_data
 
@@ -150,7 +161,7 @@ def generate_response(
     llm = model_manager.get_llm()
     output = llm.create_completion(
         prompt,
-        max_tokens=1024,
+        max_tokens=4096,
         echo=False,
         stream=True,
         stop=["<|User|>", "<|Assistant|>", "<|assistant|>", "<|user|>"],
@@ -199,11 +210,12 @@ def create_rag_interface() -> gr.Blocks:
 
                 with gr.Accordion("View Source Snippets", open=False):
                     context_display = gr.Dataframe(
-                        headers=["ID", "Content", "Source", "Relevance"],
+                        headers=["Rank", "Content", "Source", "Relevance"],
                         label="Retrieved Document Snippets",
                         interactive=False,
                         wrap=True,
                         column_widths=["10%", "60%", "15%", "15%"],
+                        max_chars=128,
                     )
 
                 chat = gr.ChatInterface(
@@ -225,8 +237,8 @@ def create_rag_interface() -> gr.Blocks:
 
 async def main():
     # Initialize models at startup
-    await model_manager.initialize()
     demo = create_rag_interface()
+    await model_manager.initialize()
 
     try:
         demo.launch(share=False)
