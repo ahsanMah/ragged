@@ -191,6 +191,9 @@ def create_rag_interface() -> gr.Blocks:
         gr.Markdown("# LLM RAG Application")
         gr.Markdown("Upload documents and ask questions based on their content")
 
+        # Status indicator for model state
+        model_status = gr.Markdown("⏳ Loading models...")
+
         with gr.Row():
             # Left panel for document upload
             with gr.Column(scale=1):
@@ -201,8 +204,11 @@ def create_rag_interface() -> gr.Blocks:
                     label="Upload Documents",
                     file_types=[".pdf", ".txt", ".docx"],
                     value=["assets/example.pdf"],
+                    interactive=False,  # Start disabled
                 )
-                upload_button = gr.Button("Process Documents")
+                upload_button = gr.Button(
+                    "Process Documents", interactive=False
+                )  # Start disabled
 
             # Right panel for Q&A and context
             with gr.Column(scale=2):
@@ -225,20 +231,49 @@ def create_rag_interface() -> gr.Blocks:
                     additional_inputs=[uploaded_files],
                     additional_outputs=[context_display],
                     description="Ask something about the uploaded documents...",
+                    # interactive=False,  # Start disabled
                 )
+
+        async def load_models():
+            """Background task to load models and enable UI"""
+            try:
+                start_time = time.time()
+                await model_manager.initialize()
+                end_time = time.time()
+
+                # Enable UI components
+                return {
+                    model_status: "✓ Models loaded in {:.1f}s".format(
+                        end_time - start_time
+                    ),
+                    uploaded_files: gr.update(interactive=True),
+                    upload_button: gr.update(interactive=True),
+                }
+            except Exception as e:
+                return {
+                    model_status: f"❌ Error loading models: {str(e)}",
+                }
 
         # Set up callbacks
         upload_button.click(
             fn=process_documents, inputs=uploaded_files, outputs=file_output
         )
 
+        # Start loading models in background when UI loads
+        demo.load(
+            fn=load_models,
+            outputs=[
+                model_status,
+                uploaded_files,
+                upload_button,
+            ],
+        )
+
     return demo
 
 
-async def main():
-    # Initialize models at startup
+def main():
     demo = create_rag_interface()
-    await model_manager.initialize()
 
     try:
         demo.launch(share=False)
@@ -247,4 +282,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
