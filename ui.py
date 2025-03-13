@@ -187,7 +187,7 @@ def create_rag_interface() -> gr.Blocks:
     Returns:
         gr.Blocks: Configured Gradio interface
     """
-    with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(theme=gr.themes.Soft(text_size="sm"), fill_width=True) as demo:
         gr.Markdown("# LLM RAG Application")
         gr.Markdown("Upload documents and ask questions based on their content")
 
@@ -196,7 +196,7 @@ def create_rag_interface() -> gr.Blocks:
 
         with gr.Row():
             # Left panel for document upload
-            with gr.Column(scale=1):
+            with gr.Column(scale=3):
                 gr.Markdown("### Document Upload")
                 file_output = gr.Textbox(label="Processing Status")
                 uploaded_files = gr.File(
@@ -210,19 +210,19 @@ def create_rag_interface() -> gr.Blocks:
                     "Process Documents", interactive=False
                 )  # Start disabled
 
-            # Right panel for Q&A and context
-            with gr.Column(scale=2):
-                gr.Markdown("### Ask Questions")
-
                 with gr.Accordion("View Source Snippets", open=False):
                     context_display = gr.Dataframe(
-                        headers=["Rank", "Content", "Source", "Relevance"],
+                        headers=["ID", "Content", "Source", "Score"],
                         label="Retrieved Document Snippets",
                         interactive=False,
                         wrap=True,
                         column_widths=["10%", "60%", "15%", "15%"],
                         max_chars=128,
                     )
+
+            # Right panel for Q&A and context
+            with gr.Column(scale=2):
+                gr.Markdown("### Ask Questions")
 
                 chat = gr.ChatInterface(
                     fn=generate_response,
