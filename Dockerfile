@@ -6,6 +6,7 @@ ENV PATH="/home/user/.local/bin:$PATH"
 
 WORKDIR /app
 RUN git clone https://github.com/abetlen/llama-cpp-python.git && \
+    cd llama-cpp-python && \
     git submodule update --remote --merge && \
     pip install .
 
