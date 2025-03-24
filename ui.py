@@ -34,7 +34,7 @@ def llm_prompt_template(query: str, context: str) -> str:
 
 
 def process_documents(
-    documents: List[gr.File], project_dir: Union[str, Path] = "/tmp/ragged"
+    documents: List[gr.File], project_files: Union[str, Path] = None
 ) -> str:
     """
     This function processes uploaded documents:
@@ -44,7 +44,7 @@ def process_documents(
 
     Args:
         documents: List of uploaded files through Gradio interface
-        project_dir: Directory to store processed documents
+        project_files: Directory to store processed documents
 
     Returns:
         str: Status message indicating number of processed files and embeddings
@@ -52,19 +52,27 @@ def process_documents(
 
     parser = Parser(chunksize=256)
     embedder = Embedder()
-    os.makedirs(project_dir, exist_ok=True)
+
+    if project_files is not None:
+        documents = [(Document.get_name_from_path(path), path) for path in project_files]
+        project_dir = os.path.dirname(project_files[0])
+    else:
+        project_dir = Path("/tmp/ragged")
+        os.makedirs(project_dir, exist_ok=True)
+        documents = [(fileobj.name, fileobj) for fileobj in documents]
 
     processed_files: List[str] = []
     embeddings: List[np.ndarray] = []
-    for doc in documents:
-        processed_files.append(doc.name)
+    for name, path in documents:
+        print(f"Processing {name}")
+        processed_files.append(name)
         # unzip tuples and zip into separate arrays
-        text_chunks, metadata = zip(*list(parser.parse(doc)))
+        text_chunks, metadata = zip(*list(parser.parse(path)))
         embeddings = np.asarray(
             embedder.embed(text_chunks, batch_size=min(len(text_chunks), 32))
         )
 
-        doc = Document(doc.name, project_dir)
+        doc = Document(name, project_dir)
         doc.store(text_chunks, embeddings=embeddings, metadata=metadata)
 
     del parser
@@ -76,7 +84,7 @@ def generate_response(
     query: str,
     history: List[Dict[str, str]],
     reference_documents: List[gr.File],
-    project_dir: Optional[str] = None,
+    project_files: Optional[List[str]] = None,
 ) -> Generator[str, None, None]:
     """
     Generate streaming responses from the LLM based on document context.
@@ -92,17 +100,25 @@ def generate_response(
         str: Generated response stream
     """
 
-    if not reference_documents:
+    if not (reference_documents or project_files):
         yield "Please upload documents first!"
         return
+
+    if project_files is not None:
+        # pdb.set_trace()
+        project_dir = os.path.dirname(project_files[0])
+        reference_documents = [Document.get_name_from_path(p) for p in project_files]
+    else:
+        reference_documents = [Document.get_name_from_path(doc.name) for doc in reference_documents]
+
 
     # Load embeddings
     embeddings_arr: List[np.ndarray] = []
     text_chunks: List[str] = []
     metadata: List[str] = []
-
-    for doc in reference_documents:
-        doc_kwargs: Dict[str, Any] = {"document_name": doc.name}
+    # pdb.set_trace()
+    for doc_name in reference_documents:
+        doc_kwargs: Dict[str, Any] = {"document_name": doc_name}
         if project_dir is not None:
             doc_kwargs["storage_dir"] = project_dir
         doc = Document(**doc_kwargs)
@@ -122,15 +138,11 @@ def generate_response(
 
     # First response
     if not history:
-        start_response = f"Based on the documents you've provided, I have extracted {len(embeddings)} snippets of information.\n\n"
+        start_response = f"Based on the documents you've provided, I have extracted {len(embeddings_arr_combined)} snippets of information.\n\n"
         response.append(start_response)
 
     # Get the nearest neighbors
     scores, knn_indices = embedder.k_nearest_neighbors(embeddings_arr_combined, query)
-
-    # Filter out scores below the threshold
-    scores = scores[scores >= 0.4]
-    knn_indices = knn_indices[scores >= 0.4]
 
     # Get the text and metadata for the nearest neighbors
     for i, idx in enumerate(knn_indices):
@@ -206,8 +218,15 @@ def create_rag_interface() -> gr.Blocks:
                     value=["assets/example.pdf"],
                     interactive=False,  # Start disabled
                 )
+
+                with gr.Accordion("(Optional) Select Project Directory", open=False):
+                    project_dir = gr.FileExplorer(
+                        glob="**/*.[ptc][dxs][ftv]", # match pdf, txt, csv
+                        ignore_glob=".**/*",
+                        interactive=True,
+                    )
                 upload_button = gr.Button(
-                    "Process Documents", interactive=False
+                    "Process Documents", interactive=True
                 )  # Start disabled
 
                 with gr.Accordion("View Source Snippets", open=False):
@@ -228,7 +247,7 @@ def create_rag_interface() -> gr.Blocks:
                     fn=generate_response,
                     type="messages",
                     stop_btn=True,
-                    additional_inputs=[uploaded_files],
+                    additional_inputs=[uploaded_files, project_dir],
                     additional_outputs=[context_display],
                     description="Ask something about the uploaded documents...",
                     # interactive=False,  # Start disabled
@@ -256,7 +275,7 @@ def create_rag_interface() -> gr.Blocks:
 
         # Set up callbacks
         upload_button.click(
-            fn=process_documents, inputs=uploaded_files, outputs=file_output
+            fn=process_documents, inputs=[uploaded_files, project_dir], outputs=file_output
         )
 
         # Start loading models in background when UI loads
@@ -279,6 +298,7 @@ def main():
         demo.launch(share=False)
     finally:
         model_manager.close()
+        os.removedirs("/tmp/ragged")
 
 
 if __name__ == "__main__":
