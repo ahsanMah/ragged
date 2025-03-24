@@ -50,9 +50,9 @@ class Document:
         os.makedirs(storage_dir, exist_ok=True)
 
         # File paths for storage
-        self.embeddings_path = os.path.join(storage_dir, "embeddings.npy")
-        self.chunks_path = os.path.join(storage_dir, "textchunks.npy")
-        self.metadata_path = os.path.join(storage_dir, "metadata.json")
+        self.embeddings_path = os.path.join(storage_dir, document_name, "embeddings.npy")
+        self.chunks_path = os.path.join(storage_dir, document_name, "textchunks.npy")
+        self.metadata_path = os.path.join(storage_dir, document_name, "metadata.json")
 
         # In-memory cache
         self.embeddings = None
