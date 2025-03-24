@@ -50,7 +50,7 @@ class Embedder:
         indices = indices.flatten()
 
         # Filter out scores below the threshold
-        scores = scores[scores >= score_threshold]
         indices = indices[scores >= score_threshold]
+        scores = scores[scores >= score_threshold]
 
         return scores, indices

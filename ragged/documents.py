@@ -44,15 +44,19 @@ class Document:
     Stores document chunks, embeddings, and metadata.
     """
 
+    @staticmethod
+    def get_name_from_path(p):
+        return os.path.basename(p).split(".")[0]
+
     def __init__(self, document_name: str, storage_dir: str = "/tmp/ragged"):
         self.name = document_name
         self.storage_dir = os.path.join(storage_dir, self.name)
-        os.makedirs(storage_dir, exist_ok=True)
+        os.makedirs(self.storage_dir, exist_ok=True)
 
         # File paths for storage
-        self.embeddings_path = os.path.join(storage_dir, document_name, "embeddings.npy")
-        self.chunks_path = os.path.join(storage_dir, document_name, "textchunks.npy")
-        self.metadata_path = os.path.join(storage_dir, document_name, "metadata.json")
+        self.embeddings_path = os.path.join(self.storage_dir, "embeddings.npy")
+        self.chunks_path = os.path.join(self.storage_dir, "textchunks.npy")
+        self.metadata_path = os.path.join(self.storage_dir, "metadata.json")
 
         # In-memory cache
         self.embeddings = None
