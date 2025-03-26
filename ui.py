@@ -9,7 +9,7 @@ from typing import Any, Dict, Generator, List, Optional, Union
 import gradio as gr
 import numpy as np
 
-from ragged.documents import Document
+from ragged.documents import DocumentDB
 from ragged.embedding import Embedder
 from ragged.models import model_manager
 from ragged.parsers import Parser
@@ -54,15 +54,18 @@ def process_documents(
     embedder = Embedder()
 
     if project_files is not None:
-        documents = [(Document.get_name_from_path(path), path) for path in project_files]
+        documents = [(DocumentDB.get_name_from_path(path), path) for path in project_files]
         project_dir = os.path.dirname(project_files[0])
+        project_name = os.path.basename(project_dir)
     else:
         project_dir = Path("/tmp/ragged")
+        project_name = "ragged"
         os.makedirs(project_dir, exist_ok=True)
         documents = [(fileobj.name, fileobj) for fileobj in documents]
 
     processed_files: List[str] = []
     embeddings: List[np.ndarray] = []
+    doc = DocumentDB(project_name, project_dir)
     for name, path in documents:
         print(f"Processing {name}")
         processed_files.append(name)
@@ -72,10 +75,9 @@ def process_documents(
             embedder.embed(text_chunks, batch_size=min(len(text_chunks), 32))
         )
 
-        doc = Document(name, project_dir)
         doc.store(text_chunks, embeddings=embeddings, metadata=metadata)
 
-    del parser
+    del parser, doc
 
     return f"Processed {len(processed_files)} documents\nExtracted: {len(embeddings)} embeddings"
 
@@ -104,30 +106,23 @@ def generate_response(
         yield "Please upload documents first!"
         return
 
+    project_name = "ragged"
+    project_dir = "/tmp/ragged"
     if project_files is not None:
         # pdb.set_trace()
         project_dir = os.path.dirname(project_files[0])
-        reference_documents = [Document.get_name_from_path(p) for p in project_files]
-    else:
-        reference_documents = [Document.get_name_from_path(doc.name) for doc in reference_documents]
-
+        project_name = os.path.basename(project_dir)
+        # reference_documents = [DocumentDB.get_name_from_path(p) for p in project_files]
 
     # Load embeddings
-    embeddings_arr: List[np.ndarray] = []
+    doc = DocumentDB(project_name, project_dir)
+    embeddings: List[np.ndarray] = []
     text_chunks: List[str] = []
     metadata: List[str] = []
-    # pdb.set_trace()
-    for doc_name in reference_documents:
-        doc_kwargs: Dict[str, Any] = {"document_name": doc_name}
-        if project_dir is not None:
-            doc_kwargs["storage_dir"] = project_dir
-        doc = Document(**doc_kwargs)
-        embeddings, text, metadatum = doc.load()
-        embeddings_arr.append(embeddings)
-        text_chunks.extend(text)
-        metadata.extend(metadatum)
+    embeddings, text_chunks, metadata = doc.load_all()
 
-    embeddings_arr_combined = np.concatenate(embeddings_arr)
+
+    embeddings_arr_combined = embeddings #np.concatenate(embeddings_arr)
     print(">>>> Embeddings combined:", embeddings_arr_combined.shape)
 
     embedder = Embedder()
@@ -150,7 +145,7 @@ def generate_response(
 
         # Create properly formatted data for the DataFrame
         context_data.append(
-            [i, text_chunks[idx], metadata[idx].filename, f"{1 - scores[i]:.2f}"]
+            [i, text_chunks[idx], metadata[idx].filename, f"{1-scores[i]:.2f}"]
         )
 
     retrieved_docs = "\n".join(retrieved_docs)
@@ -221,7 +216,7 @@ def create_rag_interface() -> gr.Blocks:
 
                 with gr.Accordion("(Optional) Select Project Directory", open=False):
                     project_dir = gr.FileExplorer(
-                        glob="**/*.[ptc][dxs][ftv]", # match pdf, txt, csv
+                        glob="**/*.[ptc][dxs][ftv]",  # match pdf, txt, csv
                         ignore_glob=".**/*",
                         interactive=True,
                     )

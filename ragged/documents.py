@@ -1,5 +1,8 @@
+import hashlib
 import json
 import os
+import pdb
+import sqlite3
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -21,13 +24,13 @@ class ChunkMetadata:
     page_number: int
     chunk_index: int
 
-    # Content boundaries
-    start_char: Optional[int] = None
-    end_char: Optional[int] = None
+    # # Content boundaries
+    # start_char: Optional[int] = None
+    # end_char: Optional[int] = None
 
-    # Additional context
-    section_title: Optional[str] = None
-    preceding_heading: Optional[str] = None
+    # # Additional context
+    # section_title: Optional[str] = None
+    # preceding_heading: Optional[str] = None
 
     def to_dict(self):
         """Convert metadata to dictionary for serialization."""
@@ -39,7 +42,7 @@ class ChunkMetadata:
         return cls(**data)
 
 
-class Document:
+class DocumentDB:
     """
     Stores document chunks, embeddings, and metadata.
     """
@@ -48,14 +51,40 @@ class Document:
     def get_name_from_path(p):
         return os.path.basename(p).split(".")[0]
 
-    def __init__(self, document_name: str, storage_dir: str = "/tmp/ragged"):
-        self.name = document_name
-        self.storage_dir = os.path.join(storage_dir, self.name)
-        os.makedirs(self.storage_dir, exist_ok=True)
+    def __init__(
+        self, project_name: str, storage_dir: str = "/tmp/ragged", persist: int = False
+    ):
+        self.name = project_name
+        self.storage_dir = storage_dir
+        self.persist = persist
+        if persist:
+            os.makedirs(storage_dir, exist_ok=True)
+            db = os.path.join(storage_dir, f"{self.name}.db")
+        else:
+            db = "file:{self.name}?mode=memory&cache=shared"
+        self.database_path = db
+        self.con = sqlite3.connect(self.database_path)
 
-        # File paths for storage
-        self.embeddings_path = os.path.join(self.storage_dir, "embeddings.npy")
-        self.chunks_path = os.path.join(self.storage_dir, "textchunks.npy")
+        # Using hash of text-chunk as unique ID
+        # Have separate tables for chunk+metadata and vectors
+        self.con.execute(
+            """CREATE TABLE IF NOT EXISTS vectors(
+            hash BLOB,
+            embedding BLOB)
+            """
+        )
+        self.con.execute(
+            """CREATE TABLE IF NOT EXISTS metadata(
+            hash BLOB,
+            text_chunk TEXT,
+            filename TEXT,
+            file_path TEXT,
+            file_type TEXT,
+            page_number INTEGER,
+            chunk_index INTEGER)
+            """
+        )
+
         self.metadata_path = os.path.join(self.storage_dir, "metadata.json")
 
         # In-memory cache
@@ -74,14 +103,40 @@ class Document:
             embeddings: Numpy array of embeddings
             metadata: List of chunk metadata
         """
+
+        hashes = [hash_text_binary(c) for c in chunks]
+        vector_bytes = [v.tobytes() for v in embeddings]
+        rows = list(zip(hashes, vector_bytes))
+
+        # rows = list(zip(chunks, vector_bytes, [self.name] * len(chunks)))
+        sql_placeholders = ", ".join(["?" for _ in range(len(rows[0]))])
+
+        # Save data to database
+        with self.con:
+            rows = list(zip(hashes, vector_bytes))
+
+            # rows = list(zip(chunks, vector_bytes, [self.name] * len(chunks)))
+            sql_placeholders = ", ".join(["?" for _ in range(len(rows[0]))])
+
+            self.con.executemany(
+                f"INSERT INTO vectors (hash, embedding) VALUES({sql_placeholders})",
+                rows,
+            )
+
+            rows = []
+            for h, c, m in zip(hashes, chunks, metadata):
+                d = {"hash": h, "text_chunk": c}
+                d.update(m.to_dict())
+                rows.append(d)
+            sql_placeholders = ", ".join(f":{k}" for k in d.keys())
+            self.con.executemany(
+                f"INSERT INTO metadata VALUES({sql_placeholders})",
+                rows,
+            )
+
         # Convert metadata to serializable format
         serialized_metadata = [m.to_dict() for m in metadata]
-
-        # Save data to disk
-        np.save(self.embeddings_path, embeddings, allow_pickle=False)
-        np.save(self.chunks_path, np.array(chunks, dtype=object), allow_pickle=True)
-
-        with open(self.metadata_path, "w") as f:
+        with open(self.metadata_path, "a") as f:
             json.dump(serialized_metadata, f)
 
         # Update in-memory cache
@@ -89,33 +144,38 @@ class Document:
         self.chunks = chunks
         self.metadata = metadata
 
-    def load(self) -> Tuple[np.ndarray, List[str], List[ChunkMetadata]]:
+    def load_all(self) -> Tuple[np.ndarray, List[str], List[ChunkMetadata]]:
         """
         Load stored embeddings, chunks and metadata.
 
         Returns:
             Tuple of (embeddings, chunks, metadata)
         """
-        if (
-            os.path.exists(self.embeddings_path)
-            and os.path.exists(self.chunks_path)
-            and os.path.exists(self.metadata_path)
-        ):
-            # Load data from disk
-            embeddings = np.load(self.embeddings_path, allow_pickle=False)
-            chunks = np.load(self.chunks_path, allow_pickle=True).tolist()
 
-            with open(self.metadata_path, "r") as f:
-                serialized_metadata = json.load(f)
+        if self.persist and not os.path.exists(self.storage_dir):
+                raise FileNotFoundError("Store files not found. Process document first.")
 
-            # Deserialize metadata
-            metadata = [ChunkMetadata.from_dict(m) for m in serialized_metadata]
+        with self.con:
+            rows = self.con.execute("SELECT * FROM vectors").fetchall()
+            assert len(rows) > 0, "No rows found in database. Process document first."
 
-            # Update in-memory cache
-            # self.embeddings = embeddings
-            # self.chunks = chunks
-            # self.metadata = metadata
+            ids, vector_bytes = list(zip(*rows))
+            embeddings = convert_bytes_to_vectors(vector_bytes)
 
-            return embeddings, chunks, metadata
-        else:
-            raise FileNotFoundError("Store files not found. Process document first.")
+            rows = self.con.execute("SELECT * FROM metadata").fetchall()
+            ids, text_chunks, *metadata_cols = list(zip(*rows))
+            metadata_rows = list(zip(*metadata_cols))
+            metadata = [ChunkMetadata(*cols) for cols in metadata_rows]
+
+        return embeddings, text_chunks, metadata
+
+
+def convert_bytes_to_vectors(vector_bytes):
+    N = len(vector_bytes)
+    vec = np.frombuffer(bytearray(b"".join(vector_bytes)), dtype=np.float32)
+
+    return vec.reshape((N, 1024))
+
+
+def hash_text_binary(text):
+    return hashlib.sha256(text.encode()).digest()  # 32-byte binary hash
