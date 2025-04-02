@@ -15,7 +15,6 @@ class ModelManager:
     Supports both async initialization and sync access after initialization.
     """
     _instance = None
-    _executor = ThreadPoolExecutor(max_workers=2)  # For running model loading in threads
 
     def __new__(cls):
         if cls._instance is None:
@@ -55,7 +54,7 @@ class ModelManager:
 
         # Run CPU-intensive model loading in a thread
         self._llm = await asyncio.get_event_loop().run_in_executor(
-            self._executor,
+            None, # using default executor
             lambda: Llama.from_pretrained(
                 repo_id="bartowski/microsoft_Phi-4-mini-instruct-GGUF",
                 filename="*Q4_K_M.gguf",
@@ -77,7 +76,7 @@ class ModelManager:
         
         # Run CPU-intensive model loading in a thread
         self._embedder = await asyncio.get_event_loop().run_in_executor(
-            self._executor,
+            None, # using default executor
             lambda: SentenceTransformer(
                 "NovaSearch/stella_en_400M_v5",
                 trust_remote_code=True,
@@ -145,7 +144,7 @@ class ModelManager:
             torch.cuda.empty_cache()
         
         self._initialized = False
-        self._executor.shutdown(wait=True)
+        # self._executor.shutdown(wait=True)
 
 # Global instance that can be imported and used throughout the application
 model_manager = ModelManager()
