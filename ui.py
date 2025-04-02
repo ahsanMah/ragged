@@ -145,7 +145,7 @@ def generate_response(
 
         # Create properly formatted data for the DataFrame
         context_data.append(
-            [i, text_chunks[idx], metadata[idx].filename, f"{1-scores[i]:.2f}"]
+            [i, text_chunks[idx], metadata[idx].filename, f"{scores[i]:.2f}"]
         )
 
     retrieved_docs = "\n".join(retrieved_docs)

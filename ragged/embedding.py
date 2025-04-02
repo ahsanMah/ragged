@@ -45,8 +45,8 @@ class Embedder:
         knn = NearestNeighbors(n_neighbors=min(k, len(embeddings)), metric="cosine")
         knn.fit(embeddings)
         query_embedding = self.model.encode([query])
-        scores, indices = knn.kneighbors(query_embedding, return_distance=True)
-        scores = scores.flatten()
+        distances, indices = knn.kneighbors(query_embedding, return_distance=True)
+        scores = (1 - distances).flatten()
         indices = indices.flatten()
 
         # Filter out scores below the threshold
