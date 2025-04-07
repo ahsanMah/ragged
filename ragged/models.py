@@ -14,6 +14,7 @@ class ModelManager:
     Uses lazy loading and caching to optimize resource usage.
     Supports both async initialization and sync access after initialization.
     """
+
     _instance = None
 
     def __new__(cls):
@@ -34,7 +35,9 @@ class ModelManager:
             return
 
         async with self._initialization_lock:
-            if self._initialized:  # Double check in case another task initialized while waiting
+            if (
+                self._initialized
+            ):  # Double check in case another task initialized while waiting
                 return
 
             # Create tasks for loading models
@@ -54,15 +57,15 @@ class ModelManager:
 
         # Run CPU-intensive model loading in a thread
         self._llm = await asyncio.get_event_loop().run_in_executor(
-            None, # using default executor
+            None,  # using default executor
             lambda: Llama.from_pretrained(
                 repo_id="bartowski/microsoft_Phi-4-mini-instruct-GGUF",
                 filename="*Q4_K_M.gguf",
                 n_gpu_layers=20,
-                n_ctx=32768,
+                n_ctx=8192,
                 verbose=True,
                 local_dir=Config.MODEL_DIR,
-            )
+            ),
         )
 
     async def _init_embedder(self) -> None:
@@ -73,10 +76,10 @@ class ModelManager:
             return
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+
         # Run CPU-intensive model loading in a thread
         self._embedder = await asyncio.get_event_loop().run_in_executor(
-            None, # using default executor
+            None,  # using default executor
             lambda: SentenceTransformer(
                 "NovaSearch/stella_en_400M_v5",
                 trust_remote_code=True,
@@ -87,7 +90,7 @@ class ModelManager:
                     "unpad_inputs": device.type == "cuda",
                 },
                 default_prompt_name="s2p_query",
-            )
+            ),
         )
 
     def get_llm(self) -> Llama:
@@ -96,7 +99,7 @@ class ModelManager:
         Should only be called after initialize() has completed.
         Raises RuntimeError if models aren't initialized.
         """
-        if not self._initialized or self._llm is None:
+        if not (self._initialized or self._llm is None):
             raise RuntimeError("Models not initialized. Call initialize() first.")
         return self._llm
 
@@ -106,7 +109,7 @@ class ModelManager:
         Should only be called after initialize() has completed.
         Raises RuntimeError if models aren't initialized.
         """
-        if not self._initialized or self._embedder is None:
+        if not (self._initialized or self._embedder is None):
             raise RuntimeError("Models not initialized. Call initialize() first.")
         return self._embedder
 
@@ -116,7 +119,7 @@ class ModelManager:
         Asynchronously get the LLM model.
         Initializes the model if not already loaded.
         """
-        if not self._initialized or self._llm is None:
+        if not (self._initialized or self._llm is None):
             await self._init_llm()
         return self._llm
 
@@ -126,7 +129,7 @@ class ModelManager:
         Asynchronously get the embedding model.
         Initializes the model if not already loaded.
         """
-        if not self._initialized or self._embedder is None:
+        if not (self._initialized or self._embedder is None):
             await self._init_embedder()
         return self._embedder
 
@@ -137,14 +140,15 @@ class ModelManager:
         if self._llm is not None:
             self._llm.close()
             self._llm = None
-        
+
         if self._embedder is not None:
             del self._embedder
             self._embedder = None
             torch.cuda.empty_cache()
-        
+
         self._initialized = False
         # self._executor.shutdown(wait=True)
+
 
 # Global instance that can be imported and used throughout the application
 model_manager = ModelManager()
