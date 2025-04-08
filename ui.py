@@ -4,23 +4,31 @@ import os
 import pdb
 import time
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Any, AsyncGenerator, Dict, Generator, List, Optional, Union
 
 import gradio as gr
 import numpy as np
+import websockets
+from websockets.exceptions import ConnectionClosedError, WebSocketException
 
 from ragged.documents import DocumentDB
 from ragged.embedding import Embedder
 from ragged.models import model_manager
 from ragged.parsers import Parser
 
+# Define the WebSocket server URI
+LLM_WEBSOCKET_URI = os.environ.get(
+    "LLM_WEBSOCKET_URI", "ws://localhost:8001/app"
+)  # Use env var or default
+
 
 def llm_prompt_template(query: str, context: str) -> str:
-    common_instruction = f"""Using the following contextual information, respond to the query.
+    common_instruction = f"""Use the following contextual information to respond to the query.
     Recall that the context should be taken as a **primary** source.
     You may use your knowledge to only adapt the context to answer the question.
     Only answer the query. Keep your response brief. DO NOT ANSWER MORE THAN ASKED.
     When referencing the context, use the following format: [<source-id>].
+    Summarize the context to answer the question.
     <context>
     {context}
     </context>
@@ -54,7 +62,9 @@ def process_documents(
     embedder = Embedder()
 
     if project_files is not None:
-        documents = [(DocumentDB.get_name_from_path(path), path) for path in project_files]
+        documents = [
+            (DocumentDB.get_name_from_path(path), path) for path in project_files
+        ]
         project_dir = os.path.dirname(project_files[0])
         project_name = os.path.basename(project_dir)
     else:
@@ -82,12 +92,12 @@ def process_documents(
     return f"Processed {len(processed_files)} documents\nExtracted: {len(embeddings)} embeddings"
 
 
-def generate_response(
+async def generate_response(
     query: str,
     history: List[Dict[str, str]],
     reference_documents: List[gr.File],
     project_files: Optional[List[str]] = None,
-) -> Generator[str, None, None]:
+):  # -> AsyncGenerator[str, None, None]:
     """
     Generate streaming responses from the LLM based on document context.
 
@@ -121,8 +131,7 @@ def generate_response(
     metadata: List[str] = []
     embeddings, text_chunks, metadata = doc.load_all()
 
-
-    embeddings_arr_combined = embeddings #np.concatenate(embeddings_arr)
+    embeddings_arr_combined = embeddings  # np.concatenate(embeddings_arr)
     print(">>>> Embeddings combined:", embeddings_arr_combined.shape)
 
     embedder = Embedder()
@@ -137,7 +146,9 @@ def generate_response(
         response.append(start_response)
 
     # Get the nearest neighbors
-    scores, knn_indices = embedder.k_nearest_neighbors(embeddings_arr_combined, query)
+    scores, knn_indices = embedder.k_nearest_neighbors(
+        embeddings_arr_combined, query, score_threshold=0.2
+    )
 
     # Get the text and metadata for the nearest neighbors
     for i, idx in enumerate(knn_indices):
@@ -164,26 +175,51 @@ def generate_response(
 
     templated_query = llm_prompt_template(query, retrieved_docs)
     prompt = "".join([prompt_history, templated_query])
-
-    llm = model_manager.get_llm()
-    output = llm.create_completion(
-        prompt,
-        max_tokens=4096,
-        echo=False,
-        stream=True,
-        stop=["<|User|>", "<|Assistant|>", "<|assistant|>", "<|user|>"],
-    )
-
     print(">>>> Prompt:")
     print(prompt)
     print(">>>> Streaming output:")
 
-    # Iterate over the output and print it.
-    for token in output:
-        text = token["choices"][0]["text"]
-        print(text, end="", flush=True)
-        response.append(text)
+    # llm = model_manager.get_llm()
+    # output = llm.create_completion(
+    #     prompt,
+    #     max_tokens=4096,
+    #     echo=False,
+    #     stream=True,
+    #     stop=["<|User|>", "<|Assistant|>", "<|assistant|>", "<|user|>"],
+    # )
+    try:
+        async with websockets.connect(LLM_WEBSOCKET_URI) as websocket:
+            await websocket.send(prompt)
+            async for message in websocket:
+                token = message
+                if token == "[END]":
+                    break
+                print(token, end="", flush=True)
+                response.append(token)
+                yield "".join(response), context_data
+    except ConnectionClosedError as e:
+        print(f"\nWebSocket connection closed unexpectedly: {e}")
+        error_msg = f"\n\n[Connection to LLM server lost: {e.reason}]"
+        response.append(error_msg)
+    except WebSocketException as e:
+        print(f"\nWebSocket error: {e}")
+        error_msg = f"\n\n[Could not connect to LLM server: {e}]"
+        response.append(error_msg)
+    except Exception as e:
+        print(f"\nAn unexpected error occurred during WebSocket communication: {e}")
+        error_msg = f"\n\n[An unexpected error occurred: {e}]"
+        response.append(error_msg)
+    finally:
         yield "".join(response), context_data
+
+    print("\n>>>> Streaming finished.")
+
+    # # Iterate over the output and print it.
+    # for token in output:
+    #     text = token["choices"][0]["text"]
+    #     print(text, end="", flush=True)
+    #     response.append(text)
+    #     yield "".join(response), context_data
 
 
 # Define the Gradio interface
@@ -194,6 +230,9 @@ def create_rag_interface() -> gr.Blocks:
     Returns:
         gr.Blocks: Configured Gradio interface
     """
+    # uri = "ws://localhost:8001/app"
+    # model_sock = websockets.connect(uri)
+
     with gr.Blocks(theme=gr.themes.Soft(text_size="sm"), fill_width=True) as demo:
         gr.Markdown("# LLM RAG Application")
         gr.Markdown("Upload documents and ask questions based on their content")
@@ -252,7 +291,8 @@ def create_rag_interface() -> gr.Blocks:
             """Background task to load models and enable UI"""
             try:
                 start_time = time.time()
-                await model_manager.initialize()
+                # await model_manager.initialize()
+                await model_manager._init_embedder()
                 end_time = time.time()
 
                 # Enable UI components
@@ -270,7 +310,9 @@ def create_rag_interface() -> gr.Blocks:
 
         # Set up callbacks
         upload_button.click(
-            fn=process_documents, inputs=[uploaded_files, project_dir], outputs=file_output
+            fn=process_documents,
+            inputs=[uploaded_files, project_dir],
+            outputs=file_output,
         )
 
         # Start loading models in background when UI loads
@@ -286,7 +328,8 @@ def create_rag_interface() -> gr.Blocks:
     return demo
 
 
-def main():
+if __name__ == "__main__":
+# def main():
     demo = create_rag_interface()
 
     try:
@@ -295,6 +338,4 @@ def main():
         model_manager.close()
         os.removedirs("/tmp/ragged")
 
-
-if __name__ == "__main__":
-    main()
+    # main()
